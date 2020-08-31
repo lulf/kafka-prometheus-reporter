@@ -6,9 +6,9 @@ package org.apache.kafka.common.metrics;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
-class LibraryTest {
-    @Test void testSomeLibraryMethod() {
-        Library classUnderTest = new Library();
-        assertTrue(classUnderTest.someLibraryMethod(), "someLibraryMethod should return 'true'");
+class PrometheusReporterTest {
+    @Test
+    void testSomeLibraryMethod() {
+        assertTrue(true);
     }
 }
