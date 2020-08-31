@@ -14,8 +14,10 @@ To build the plugin:
 
 Copy the resulting jar in `build/libs/kafka-prometheus-reporter-all.jar` into the Kafka classpath.
 
-Configure Kafka to load the plugin:
+Configure Kafka to load the plugin and some plugin properties:
 
 ```
 metric.reporters=org.apache.kafka.common.metrics.PrometheusReporter
+metrics.prometheus.http.port=8080
+metrics.prometheus.scrape.interval.seconds=10
 ```
