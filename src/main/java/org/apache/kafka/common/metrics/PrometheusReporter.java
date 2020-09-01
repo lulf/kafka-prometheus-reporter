@@ -56,12 +56,15 @@ public class PrometheusReporter implements MetricsReporter {
     private final Map<String, KafkaMetric> metricMap = new HashMap<>();
     private final Map<String, Gauge> collectorMap = new HashMap<>();
 
-    private Duration scrapeInterval;
     private final CollectorRegistry collectorRegistry = new CollectorRegistry(true);
+    private final ScheduledExecutorService scraperPool = Executors.newScheduledThreadPool(1);
+
+    private Duration scrapeInterval;
     private HTTPServer httpServer;
+
     private String namespace = "kafka.server";
     private String broker_id = "0";
-    private final ScheduledExecutorService scraperPool = Executors.newScheduledThreadPool(1);
+    private String cluster_id = "unknown";
 
     @Override
     public void configure(Map<String, ?> configs) {
@@ -96,9 +99,9 @@ public class PrometheusReporter implements MetricsReporter {
         synchronized (this) {
             collectorMap.clear();
             for (KafkaMetric metric : metrics) {
+                log.info("Configuring metric {} (configs {})", metric.metricName().name(), metric.config());
                 if (metricMap.get(metric.metricName().name()) == null) {
                     metricMap.put(metric.metricName().name(), metric);
-                    // log.info("Configuring metric {} (configs {})", metric.metricName().name(), metric.config().tags());
                     Gauge collector = kafkaMetricToCollector(metric);
                     collectorMap.put(metric.metricName().name(), collector);
                     collectorRegistry.register(collector);
@@ -116,6 +119,7 @@ public class PrometheusReporter implements MetricsReporter {
                 .name(String.format("%s_%s", namespace.replaceAll("\\.", "_"), kafkaMetric.metricName().name().replaceAll("-", "_")))
                 .help(help);
         List<String> labels = new ArrayList<>();
+        labels.add("cluster_id");
         labels.add("broker_id");
         labels.addAll(kafkaMetric.config().tags().keySet().stream().map(s -> s.replaceAll("-", "_")).collect(Collectors.toList()));
         if (labels.size() > 0) {
@@ -159,8 +163,10 @@ public class PrometheusReporter implements MetricsReporter {
 
     @Override
     public void contextChange(MetricsContext metricsContext) {
+        log.info("COntext change: {}", metricsContext.contextLabels());
         this.namespace = metricsContext.contextLabels().getOrDefault("_namespace", "kafka.server");
         this.broker_id = metricsContext.contextLabels().getOrDefault("kafka.broker.id", "0");
+        this.cluster_id = metricsContext.contextLabels().getOrDefault("kafka.cluster.id", "unknown");
     }
 
     private class MetricScraper implements Runnable {
@@ -173,6 +179,7 @@ public class PrometheusReporter implements MetricsReporter {
                     for (Map.Entry<String, KafkaMetric> metric : PrometheusReporter.this.metricMap.entrySet()) {
                         Gauge gauge = PrometheusReporter.this.collectorMap.get(metric.getKey());
                         List<String> labels = new ArrayList<>();
+                        labels.add(cluster_id);
                         labels.add(broker_id);
                         labels.addAll(metric.getValue().config().tags().keySet().stream().map(s -> s.replaceAll("-", "_")).collect(Collectors.toList()));
                         double value = metric.getValue().measurableValue(now);
