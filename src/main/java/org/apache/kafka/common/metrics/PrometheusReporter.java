@@ -131,14 +131,15 @@ public class PrometheusReporter implements MetricsReporter {
     /**
      * Checks if metric should be included in exported list. Exclude overrides includes.
      */
-    private boolean includeMetric(KafkaMetric metrics) {
+    private boolean includeMetric(KafkaMetric metric) {
         if (includePatterns == null && excludePatterns == null) {
             return true;
         }
 
+        String metricName = metric.metricName().name();
         if (excludePatterns != null) {
             for (Pattern p : excludePatterns) {
-                if (p.matcher(metrics.metricName().name()).matches()) {
+                if (p.matcher(metricName).matches()) {
                     return false;
                 }
             }
@@ -146,7 +147,7 @@ public class PrometheusReporter implements MetricsReporter {
 
         if (includePatterns != null) {
             for (Pattern p : includePatterns) {
-                if (p.matcher(metrics.metricName().name()).matches()) {
+                if (p.matcher(metricName).matches()) {
                     return true;
                 }
             }
