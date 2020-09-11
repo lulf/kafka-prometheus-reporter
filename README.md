@@ -20,3 +20,10 @@ metric.reporters=org.apache.kafka.common.metrics.PrometheusReporter
 metrics.prometheus.http.port=8080
 metrics.prometheus.scrape.interval.seconds=10
 ```
+
+If you do not want to export all metrics to Prometheus, a pattern can be configured to match the
+metrics you want to export:
+
+```
+metrics.prometheus.include.patterns=["connection.*"]
+```

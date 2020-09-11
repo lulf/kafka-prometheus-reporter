@@ -16,6 +16,9 @@
  */
 package org.apache.kafka.common.metrics;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JavaType;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.prometheus.client.CollectorRegistry;
 import io.prometheus.client.Gauge;
 import io.prometheus.client.exporter.HTTPServer;
@@ -37,6 +40,7 @@ import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -45,13 +49,16 @@ import java.util.stream.Collectors;
 public class PrometheusReporter implements MetricsReporter {
 
     private static final Logger log = LoggerFactory.getLogger(PrometheusReporter.class);
+    private static final ObjectMapper mapper = new ObjectMapper();
 
     public static final String METRICS_CONFIG_PREFIX = "metrics.prometheus.";
 
+    public static final String INCLUDE_PATTERNS_CONFIG = METRICS_CONFIG_PREFIX + "include.patterns";
+    public static final String EXCLUDE_PATTERNS_CONFIG = METRICS_CONFIG_PREFIX + "exclude.patterns";
     public static final String PORT_CONFIG = METRICS_CONFIG_PREFIX + "http.port";
     public static final String SCRAPE_INTERVAL_CONFIG = METRICS_CONFIG_PREFIX + "scrape.interval.seconds";
 
-    public static final Set<String> RECONFIGURABLE_CONFIGS = Collections.singleton(SCRAPE_INTERVAL_CONFIG);
+    public static final Set<String> RECONFIGURABLE_CONFIGS = Set.of(SCRAPE_INTERVAL_CONFIG, INCLUDE_PATTERNS_CONFIG, EXCLUDE_PATTERNS_CONFIG);
 
     private final Map<String, KafkaMetric> metricMap = new HashMap<>();
     private final Map<String, Gauge> collectorMap = new HashMap<>();
@@ -61,21 +68,28 @@ public class PrometheusReporter implements MetricsReporter {
 
     private Duration scrapeInterval;
     private HTTPServer httpServer;
+    private List<Pattern> includePatterns;
+    private List<Pattern> excludePatterns;
 
     private String namespace = "kafka.server";
     private String broker_id = "0";
     private String cluster_id = "unknown";
 
+
     @Override
     public void configure(Map<String, ?> configs) {
         reconfigure(configs);
         try {
-            httpServer = new HTTPServer(new InetSocketAddress(Optional.ofNullable(configs.get(PORT_CONFIG)).map(Object::toString).map(Integer::parseInt).orElse(8080)), collectorRegistry, true);
+            httpServer = new HTTPServer(new InetSocketAddress(getPort(configs)), collectorRegistry, true);
             log.info("Configuring PrometheusReporter on port {}", configs.get(PORT_CONFIG));
             scraperPool.schedule(new MetricScraper(), scrapeInterval.getSeconds(), TimeUnit.SECONDS);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
+    }
+
+    private static int getPort(Map<String, ?> configs) {
+        return Optional.ofNullable(configs.get(PORT_CONFIG)).map(Object::toString).map(Integer::parseInt).orElse(8080);
     }
 
     @Override
@@ -85,13 +99,59 @@ public class PrometheusReporter implements MetricsReporter {
 
     @Override
     public void validateReconfiguration(Map<String, ?> configs) throws ConfigException {
+        synchronized (this) {
+            if (httpServer != null && getPort(configs) != httpServer.getPort()) {
+                throw new ConfigException("port cannot be reconfigured");
+            }
+        }
     }
 
     @Override
     public void reconfigure(Map<String, ?> configs) {
         synchronized (this) {
             this.scrapeInterval = Duration.ofSeconds(Optional.ofNullable(configs.get(SCRAPE_INTERVAL_CONFIG)).map(Object::toString).map(Integer::parseInt).orElse(10));
+            this.includePatterns = Optional.ofNullable(configs.get(INCLUDE_PATTERNS_CONFIG)).map(Object::toString).map(PrometheusReporter::parsePatterns).orElse(null);
+            this.excludePatterns = Optional.ofNullable(configs.get(EXCLUDE_PATTERNS_CONFIG)).map(Object::toString).map(PrometheusReporter::parsePatterns).orElse(null);
+            for (KafkaMetric metric : metricMap.values()) {
+                metricChange(metric);
+            }
         }
+    }
+
+    private static List<Pattern> parsePatterns(String json) {
+        try {
+            JavaType type = mapper.getTypeFactory().constructCollectionType(List.class, String.class);
+            List<String> patterns = mapper.readValue(json, type);
+            return patterns.stream().map(Pattern::compile).collect(Collectors.toList());
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * Checks if metric should be included in exported list. Exclude overrides includes.
+     */
+    private boolean includeMetric(KafkaMetric metrics) {
+        if (includePatterns == null && excludePatterns == null) {
+            return true;
+        }
+
+        if (excludePatterns != null) {
+            for (Pattern p : excludePatterns) {
+                if (p.matcher(metrics.metricName().name()).matches()) {
+                    return false;
+                }
+            }
+        }
+
+        if (includePatterns != null) {
+            for (Pattern p : includePatterns) {
+                if (p.matcher(metrics.metricName().name()).matches()) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     @Override
@@ -99,12 +159,14 @@ public class PrometheusReporter implements MetricsReporter {
         synchronized (this) {
             collectorMap.clear();
             for (KafkaMetric metric : metrics) {
-                log.info("Configuring metric {} (configs {})", metric.metricName().name(), metric.config());
-                if (metricMap.get(metric.metricName().name()) == null) {
-                    metricMap.put(metric.metricName().name(), metric);
-                    Gauge collector = kafkaMetricToCollector(metric);
-                    collectorMap.put(metric.metricName().name(), collector);
-                    collectorRegistry.register(collector);
+                if (includeMetric(metric)) {
+                    log.info("Configuring metric {}", metric.metricName().name());
+                    if (metricMap.get(metric.metricName().name()) == null) {
+                        metricMap.put(metric.metricName().name(), metric);
+                        Gauge collector = kafkaMetricToCollector(metric);
+                        collectorMap.put(metric.metricName().name(), collector);
+                        collectorRegistry.register(collector);
+                    }
                 }
             }
         }
@@ -134,10 +196,12 @@ public class PrometheusReporter implements MetricsReporter {
             Gauge existing = collectorMap.remove(metric.metricName().name());
             if (existing != null) {
                 collectorRegistry.unregister(existing);
-                Gauge newCollector = kafkaMetricToCollector(metric);
-                collectorMap.put(metric.metricName().name(), newCollector);
-                metricMap.put(metric.metricName().name(), metric);
-                collectorRegistry.register(newCollector);
+                if (includeMetric(metric)) {
+                    Gauge newCollector = kafkaMetricToCollector(metric);
+                    collectorMap.put(metric.metricName().name(), newCollector);
+                    metricMap.put(metric.metricName().name(), metric);
+                    collectorRegistry.register(newCollector);
+                }
             }
         }
     }
@@ -163,7 +227,6 @@ public class PrometheusReporter implements MetricsReporter {
 
     @Override
     public void contextChange(MetricsContext metricsContext) {
-        log.info("COntext change: {}", metricsContext.contextLabels());
         this.namespace = metricsContext.contextLabels().getOrDefault("_namespace", "kafka.server");
         this.broker_id = metricsContext.contextLabels().getOrDefault("kafka.broker.id", "0");
         this.cluster_id = metricsContext.contextLabels().getOrDefault("kafka.cluster.id", "unknown");

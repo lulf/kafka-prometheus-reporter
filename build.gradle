@@ -27,6 +27,10 @@ dependencies {
     compile group: 'io.prometheus', name: 'simpleclient_hotspot', version: '0.9.0'
     compile group: 'io.prometheus', name: 'simpleclient_httpserver', version: '0.9.0'
 
+    // Jackson libary for parsing JSON config.
+    compile group: 'com.fasterxml.jackson.core', name: 'jackson-databind', version: '2.11.2'
+
+
     // Use JUnit Jupiter API for testing.
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.6.2'
 
