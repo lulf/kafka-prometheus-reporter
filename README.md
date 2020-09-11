@@ -27,3 +27,11 @@ metrics you want to export:
 ```
 metrics.prometheus.include.patterns=["connection.*"]
 ```
+
+## Testing locally
+
+Run it locally (make sure your server.properties enables the reporter):
+
+```
+CLASSPATH=/path/to/build/libs/kafka-prometheus-reporter-all.jar ./bin/kafka-server-start.sh server.properties
+```
